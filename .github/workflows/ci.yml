@@ -220,9 +220,9 @@ jobs:
         name: pvz-portable-macos
         path: dist/
 
-  # ==================== 修改点：Android 改为 32 位 (armeabi-v7a) ====================
+  # ==================== Android 32-bit 构建 ====================
   build-android:
-    name: Build for Android (armeabi-v7a)   # 名称修改
+    name: Build for Android (armeabi-v7a)
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -240,13 +240,11 @@ jobs:
 
     - name: Install Android NDK
       run: |
-        # Use the latest NDK available on the runner
         if [ -n "$ANDROID_NDK_LATEST_HOME" ] && [ -d "$ANDROID_NDK_LATEST_HOME" ]; then
           echo "ANDROID_NDK=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
           echo "Using pre-installed NDK: $ANDROID_NDK_LATEST_HOME"
         else
-          # Fallback: install via sdkmanager
           yes | sdkmanager --install "ndk;$(sdkmanager --list 2>/dev/null | grep -oP 'ndk;\K[\d.]+' | sort -V | tail -1)" || true
           NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | sort -V | tail -1)
           echo "ANDROID_NDK=${NDK_DIR%/}" >> "$GITHUB_ENV"
@@ -258,7 +256,7 @@ jobs:
         SDL2_TAG=$(git ls-remote --tags https://github.com/libsdl-org/SDL.git 'refs/tags/release-2.*' \
           | sed 's|.*refs/tags/release-||' | sort -V | tail -1)
         if [ -z "$SDL2_TAG" ]; then
-          SDL2_TAG="2.32.10" # Fallback to a known stable version if tag retrieval fails
+          SDL2_TAG="2.32.10"
         fi
         echo "Using SDL2 version: $SDL2_TAG"
         wget -q "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_TAG}/SDL2-${SDL2_TAG}.tar.gz"
@@ -272,7 +270,6 @@ jobs:
 
     - name: Build SDL2 Shared Library
       run: |
-        # 32 位架构：armeabi-v7a
         cmake -B build-sdl2 \
           -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=armeabi-v7a \
@@ -292,9 +289,13 @@ jobs:
         BUILD_DIR=build-android-$ABI
         SDL2_PREFIX=$GITHUB_WORKSPACE/sdl2-android
 
+        # 手动设置编译器（修复 vcpkg 检测失败问题）
+        export CC=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${ANDROID_API}-clang
+        export CXX=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi${ANDROID_API}-clang++
+
         cmake -B $BUILD_DIR \
           -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
-          -DVCPKG_TARGET_TRIPLET=arm-android \          # 修正 triplet
+          -DVCPKG_TARGET_TRIPLET=arm-android \
           -DVCPKG_CMAKE_SYSTEM_VERSION=$ANDROID_API \
           -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=$ABI \
@@ -304,21 +305,17 @@ jobs:
 
         cmake --build $BUILD_DIR -j$(nproc)
 
-        # Collect all shared libraries into jniLibs for Gradle to package
+        # 收集 .so 文件
         JNILIBS=android/app/src/main/jniLibs/$ABI
         mkdir -p $JNILIBS
         cp -L $BUILD_DIR/libmain.so $JNILIBS/
-
-        # Copy SDL2 shared library
         cp -L $SDL2_PREFIX/lib/libSDL2*.so $JNILIBS/
 
-        # Copy any .so dependencies from vcpkg (manifest mode installs into build dir)
-        VCPKG_LIB=$BUILD_DIR/vcpkg_installed/arm-android/lib   # 修正路径
+        VCPKG_LIB=$BUILD_DIR/vcpkg_installed/arm-android/lib
         for so in "$VCPKG_LIB"/*.so; do
           [ -f "$so" ] && cp -L "$so" $JNILIBS/
         done
 
-        # Strip debug symbols to reduce APK size
         STRIP=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip
         for so in "$JNILIBS"/*.so; do
           "$STRIP" --strip-unneeded "$so"
@@ -331,15 +328,12 @@ jobs:
       run: |
         cd android
         echo "sdk.dir=$ANDROID_HOME" > local.properties
-
-        # Use gradle wrapper; package pre-built native libraries into a release APK (debug-signed)
         gradle wrapper
         ./gradlew assembleRelease -PusePrebuiltLibs=true --no-daemon
 
     - name: Copy APK
       run: |
         mkdir -p dist
-        # 将生成的 APK 复制并重命名为 32 位标识
         find android -name "*.apk" -path "*/release/*" -exec cp {} dist/pvz-portable-android-armeabi-v7a.apk \;
 
     - name: Upload Artifact
@@ -347,7 +341,7 @@ jobs:
       with:
         name: pvz-portable-android
         path: dist/
-  # ==================== 修改结束 ====================
+  # ==================== Android 结束 ====================
 
   build-ios:
     name: Build for iOS (arm64)
@@ -421,7 +415,7 @@ jobs:
           | grep -v '\^{}' | sed 's|.*refs/tags/libopenmpt-||' \
           | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
         if [ -z "$OPENMPT_TAG" ]; then
-          OPENMPT_TAG="0.8.4" # Fallback to a known stable version if tag retrieval fails
+          OPENMPT_TAG="0.8.4"
         fi
         echo "Using libopenmpt version: $OPENMPT_TAG"
         git clone --depth=1 --branch "libopenmpt-${OPENMPT_TAG}" https://github.com/OpenMPT/openmpt.git /tmp/libopenmpt-src
@@ -487,7 +481,6 @@ jobs:
         cd ../..
 
         echo "Preparing Android file..."
-        # 注意：这里需要匹配我们在 Copy APK 步骤中使用的文件名
         mv artifacts/pvz-portable-android/pvz-portable-android-armeabi-v7a.apk release_files/pvz-portable-android-armeabi-v7a.apk
 
         echo "Preparing iOS file..."
